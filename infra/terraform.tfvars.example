@@ -1,0 +1,4 @@
+project_id = "your-gcp-project"
+image = "europe-west1-docker.pkg.dev/your-gcp-project/chat-evaluation-harness/chat-evaluation-harness:TAG"
+# Keep deletion protection enabled for experiment data.
+deletion_protection = true
