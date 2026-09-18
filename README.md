@@ -246,4 +246,4 @@ Cloud SQL is the principal cost. `db-f1-micro`, 10 GB, zonal placement, Cloud Ru
 
 ## License
 
-Add the public repository's chosen license before publication.
+Licensed under the [Apache License 2.0](LICENSE).

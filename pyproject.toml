@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "chat-evaluation-harness"
 version = "0.1.0"
 description = "A small, provider-neutral conversational model evaluation harness"
+license = "Apache-2.0"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
