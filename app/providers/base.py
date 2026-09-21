@@ -26,8 +26,9 @@ class GenerationResult:
 
 
 class ProviderError(RuntimeError):
-    def __init__(self, error_type: str, message: str):
+    def __init__(self, error_type: str, message: str, *, retryable: bool = False):
         self.error_type = error_type
+        self.retryable = retryable
         super().__init__(message)
 
 
@@ -42,3 +43,7 @@ class ModelProvider(ABC):
         self, messages: Sequence[ModelMessage], deployment: ModelDeployment
     ) -> Iterator[str]:
         yield self.generate(messages, deployment).text
+
+    def close(self) -> None:
+        """Release provider resources when the caller owns the provider instance."""
+        return None

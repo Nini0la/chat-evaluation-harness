@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage the chat evaluation harness")
     commands = parser.add_subparsers(required=True)
     add = commands.add_parser("register-deployment")
-    add.add_argument("--provider", choices=["mock", "http", "modal"], required=True)
+    add.add_argument("--provider", choices=["mock", "http", "modal", "azure_openai"], required=True)
     add.add_argument("--model-id", required=True)
     add.add_argument("--model-version", required=True)
     add.add_argument("--endpoint")

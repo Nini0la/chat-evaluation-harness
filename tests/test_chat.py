@@ -385,6 +385,37 @@ def test_failed_turn_does_not_block_later_send(client, app, auth_headers):
     assert len(provider.calls) == 2
 
 
+def test_stale_interrupted_turn_is_recovered_before_next_send(client, app, auth_headers):
+    provider = RecordingProvider()
+    app.state.provider_factory = lambda deployment: provider
+    session_id = create_session(client, app, auth_headers)
+    with app.state.test_session_factory() as db:
+        session = db.get(Session, uuid.UUID(session_id))
+        stale = Turn(
+            session_id=session.id,
+            turn_number=1,
+            user_message="interrupted",
+            request_started_at=utcnow() - timedelta(hours=1),
+            model_deployment_id=session.model_deployment_id,
+            status=TurnStatus.pending,
+        )
+        db.add(stale)
+        db.commit()
+        stale_id = stale.id
+
+    response = client.post(
+        f"/api/sessions/{session_id}/messages",
+        headers=auth_headers,
+        json={"message": "continue"},
+    )
+
+    assert response.status_code == 200
+    with app.state.test_session_factory() as db:
+        recovered = db.get(Turn, stale_id)
+        assert recovered.status == TurnStatus.failed
+        assert recovered.error_type == "interrupted_request"
+
+
 def test_unknown_session_does_not_create_turn(client, app, auth_headers):
     response = client.post(
         f"/api/sessions/{uuid.uuid4()}/messages",

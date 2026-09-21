@@ -13,3 +13,4 @@ build/
 .terraform/
 *.tfstate*
 .DS_Store
+eval_runs/

@@ -4,6 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Model evaluation chat</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/shadow-chat.css">
 </head>
 <body>
   <div id="access-gate" class="overlay hidden" role="dialog" aria-modal="true">
@@ -15,6 +16,14 @@
   </div>
   <main class="shell">
     <header><div><h1>Evaluation chat</h1><p class="notice">Experimental model. Interactions are logged for evaluation. Do not submit sensitive or personally identifying information.</p></div><button id="new-chat" class="secondary">New Chat</button></header>
+    <section class="shadow-config" aria-labelledby="shadow-heading">
+      <div><h2 id="shadow-heading">Comparison models</h2><p>Optional. Changes apply when you start a new chat.</p></div>
+      <div class="shadow-selects">
+        <label class="slot-red">Red<select data-shadow-slot="red"><option value="">None</option></select></label>
+        <label class="slot-green">Green<select data-shadow-slot="green"><option value="">None</option></select></label>
+        <label class="slot-blue">Blue<select data-shadow-slot="blue"><option value="">None</option></select></label>
+      </div>
+    </section>
     <section id="messages" aria-live="polite" aria-label="Conversation"></section>
     <div id="status" class="status" role="status"></div>
     <form id="composer"><textarea id="message" rows="2" maxlength="20000" placeholder="Type a message…" required></textarea><button id="send" type="submit">Send</button></form>

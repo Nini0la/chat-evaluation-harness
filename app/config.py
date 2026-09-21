@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     model_provider: str = "mock"
     model_endpoint: str | None = None
     model_api_key: SecretStr | None = None
+    azure_openai_api_key: SecretStr | None = None
+    azure_openai_api_version: str = "2024-10-21"
     model_id: str = "mock-chat"
     model_version: str = "development"
     model_timeout_seconds: float = 60.0

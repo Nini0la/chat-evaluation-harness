@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Feedback, Session, Turn
+from app.models import Feedback, Session, SessionShadow, ShadowResponse, Turn
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -22,6 +22,9 @@ def export_records(db: DbSession) -> list[dict[str, Any]]:
         .options(
             selectinload(Turn.feedback),
             selectinload(Turn.session).selectinload(Session.model_deployment),
+            selectinload(Turn.shadow_responses)
+            .selectinload(ShadowResponse.session_shadow)
+            .selectinload(SessionShadow.model_deployment),
         )
         .order_by(Turn.created_at, Turn.turn_number)
     ).all()
@@ -64,6 +67,7 @@ def export_records(db: DbSession) -> list[dict[str, Any]]:
                     "provider_request_id": turn.provider_request_id,
                     "provider_metadata": turn.provider_metadata,
                 },
+                "shadow_responses": [_shadow_record(item) for item in turn.shadow_responses],
                 "feedback": [_feedback_record(item) for item in turn.feedback],
             }
         )
@@ -77,6 +81,37 @@ def _feedback_record(feedback: Feedback) -> dict[str, Any]:
         "failure_category": feedback.failure_category,
         "comment": feedback.comment,
         "created_at": _iso(feedback.created_at),
+    }
+
+
+def _shadow_record(response: ShadowResponse) -> dict[str, Any]:
+    deployment = response.session_shadow.model_deployment
+    return {
+        "id": str(response.id),
+        "slot": response.slot,
+        "model": {
+            "deployment_id": deployment.id,
+            "provider": deployment.provider,
+            "model_id": deployment.model_id,
+            "version": deployment.model_version,
+            "configuration": deployment.configuration_json,
+        },
+        "assistant_response": response.assistant_response,
+        "status": response.status.value,
+        "error_type": response.error_type,
+        "error_message": response.error_message,
+        "request_started_at": _iso(response.request_started_at),
+        "inference_started_at": _iso(response.inference_started_at),
+        "first_token_at": _iso(response.first_token_at),
+        "response_completed_at": _iso(response.response_completed_at),
+        "input_tokens": response.input_tokens,
+        "output_tokens": response.output_tokens,
+        "time_to_first_token_ms": response.time_to_first_token_ms,
+        "inference_latency_ms": response.inference_latency_ms,
+        "total_latency_ms": response.total_latency_ms,
+        "tokens_per_second": response.tokens_per_second,
+        "provider_request_id": response.provider_request_id,
+        "provider_metadata": response.provider_metadata,
     }
 
 
@@ -115,6 +150,7 @@ def as_csv(records: list[dict[str, Any]]) -> str:
         "total_latency_ms",
         "tokens_per_second",
         "provider_request_id",
+        "shadow_responses_json",
         "feedback_ratings",
         "feedback_categories",
         "feedback_comments",
@@ -153,6 +189,9 @@ def as_csv(records: list[dict[str, Any]]) -> str:
             "total_latency_ms": turn["total_latency_ms"],
             "tokens_per_second": turn["tokens_per_second"],
             "provider_request_id": turn["provider_request_id"],
+            "shadow_responses_json": json.dumps(
+                record.get("shadow_responses", []), ensure_ascii=False
+            ),
             "feedback_ratings": "|".join(str(item["rating"]) for item in feedback),
             "feedback_categories": "|".join(item["failure_category"] or "" for item in feedback),
             "feedback_comments": "|".join(item["comment"] or "" for item in feedback),

@@ -5,6 +5,7 @@ import pytest
 
 from app.config import Settings
 from app.models import ModelDeployment
+from app.providers.azure_openai import AzureOpenAIProvider
 from app.providers.base import ModelMessage, ProviderError
 from app.providers.http import HttpModelProvider
 from app.providers.mock import MockModelProvider
@@ -90,6 +91,48 @@ def test_http_provider_classifies_remote_status_without_leaking_body():
         provider.generate([ModelMessage(role="user", content="x")], deployment())
     assert failure.value.error_type == "provider_failure"
     assert "secret" not in str(failure.value)
+
+
+def test_azure_openai_provider_requests_json_and_parses_chat_completion():
+    def handler(request: httpx.Request):
+        assert request.headers["api-key"] == "azure-secret"
+        assert request.url.params["api-version"] == "2024-10-21"
+        body = json.loads(request.content)
+        assert body["response_format"] == {"type": "json_object"}
+        assert body["messages"] == [{"role": "user", "content": "judge this"}]
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "azure-request"},
+            json={
+                "id": "completion-id",
+                "model": "judge-snapshot",
+                "choices": [
+                    {
+                        "message": {"content": '{"score": 3}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 4},
+            },
+        )
+
+    selected = deployment()
+    selected.provider = "azure_openai"
+    selected.model_id = "judge-deployment"
+    selected.endpoint_reference = "https://azure.example"
+    selected.configuration_json = {"response_format": "json"}
+    provider = AzureOpenAIProvider(
+        Settings(azure_openai_api_key="azure-secret"),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    result = provider.generate([ModelMessage(role="user", content="judge this")], selected)
+
+    assert result.text == '{"score": 3}'
+    assert result.provider_request_id == "azure-request"
+    assert result.input_tokens == 12
+    assert result.output_tokens == 4
+    assert result.provider_metadata["finish_reason"] == "stop"
 
 
 @pytest.mark.parametrize(

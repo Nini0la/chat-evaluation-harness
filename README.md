@@ -1,18 +1,20 @@
 # Chat Evaluation Harness
 
-A standalone, provider-neutral web application for evaluating conversational language models with invited testers. It pins each conversation to one model deployment, records raw responses and failures, captures latency/token metadata when available, collects optional feedback, and provides protected review/export tools.
+A standalone, provider-neutral application with complementary interactive shadow-chat and reproducible JSONL benchmark modes. It records exact model outputs, failures, model/checkpoint identity, generation configuration, and operational evidence.
 
 This repository has **no dependency on Edge-IMCI or any other application**.
 
 ## Features
 
 - Responsive open-ended chat UI with refresh restoration and **New Chat**
+- Optional red/green/blue shadow models with isolated conversation state and side-by-side responses
 - Short privacy/evaluation notice, loading/error states, thumbs feedback, and problem reports
 - Durable sessions, turns, failures, feedback, deployment metadata, and performance measurements
 - Session-level deployment pinning (model changes never alter an existing conversation)
 - Provider interface with local mock and configurable HTTP/Modal-compatible adapters
 - Shared tester access code plus a separate admin code; provider secrets stay server-side
 - Protected conversation review and JSONL/CSV exports
+- Versioned JSONL eval runner with deterministic checks, structured LLM judging, resume, and comparison reports
 - PostgreSQL/Alembic for production; SQLite works for development and tests
 - Docker, Cloud Build, and low-cost Terraform baseline for Cloud Run/Cloud SQL/Secret Manager
 
@@ -51,8 +53,11 @@ All configuration is server-side and read from environment variables (or local `
 | `MODEL_PROVIDER` | Bootstrap/provider convention (`mock`, `http`, `modal`) | `mock` |
 | `MODEL_ENDPOINT` | Fallback remote generation URL | empty |
 | `MODEL_API_KEY` | Bearer token used only by the backend | empty |
+| `AZURE_OPENAI_API_KEY` | Azure OpenAI `api-key` credential for candidate or judge deployments | empty |
+| `AZURE_OPENAI_API_VERSION` | Azure OpenAI REST API version | `2024-10-21` |
 | `MODEL_ID`, `MODEL_VERSION` | Deployment naming defaults/conventions | development values |
 | `MODEL_TIMEOUT_SECONDS` | Remote request timeout | `60` |
+| `EVAL_JUDGE_MODEL` | Default judge deployment ID or exact unique model version | empty |
 
 Development permits the documented insecure access-code defaults for convenience. Every other
 `ENVIRONMENT` fails configuration/startup validation when either access code is blank, still set to
@@ -96,6 +101,8 @@ chat-eval register-deployment \
 
 `--activate` atomically deactivates the prior deployment. Existing sessions retain their old `model_deployment_id`; only newly created sessions receive the new active deployment. `chat-eval list-deployments` shows the registry. The protected `POST /admin/deployments` API offers the same registration workflow.
 
+The active deployment remains the primary interactive model. The chat UI can optionally assign up to three other registered deployments to red, green, and blue when starting a new session. Each model receives the same user turns but only its own previous assistant responses. Leaving all comparison selectors empty preserves the original single-model workflow.
+
 ## Provider HTTP contract and Modal
 
 The HTTP adapter sends:
@@ -122,6 +129,47 @@ It adds `Authorization: Bearer <MODEL_API_KEY>` when configured. The expected re
 ```
 
 Only `text` is required. Missing metrics remain null. To connect Modal later: expose a protected HTTPS function matching this contract, put its URL in a new deployment, store its token as `MODEL_API_KEY` in Secret Manager, register the deployment as `modal` or `http`, run a smoke chat, then activate it. No UI rebuild is needed.
+
+Azure OpenAI is available as provider `azure_openai`. Set `endpoint_reference` to either the Azure resource base URL or a complete chat-completions URL, put the deployment name in `model_id`, and keep the API key in `AZURE_OPENAI_API_KEY`. The adapter requests JSON mode when the judge configuration sets `response_format` to `json`.
+
+## Benchmark mode
+
+ChatEval consumes reviewed JSONL suites; it does not create clinical cases, clinical rules, golden answers, or training data. See [`evals/README.md`](evals/README.md) for the domain-neutral record contract. Suite identity is the SHA-256 of the exact file.
+
+The v1 contract requires `id`, `suite_version`, `category`, `subcategory`, `prompt`,
+`expected_behavior`, `required_points`, `forbidden_points`, `severity`, `source_of_truth`, and
+`leakage_group`. Unknown optional metadata is preserved rather than rejected. `metric_tags` can be
+used for cross-cutting reports. Only `prompt` reaches candidate models; provenance, category,
+severity, leakage, and metric fields never enter candidate or judge prompts.
+
+Register candidate and judge deployments, using a unique `model_version` as a convenient selector, then run:
+
+```bash
+python eval.py \
+  --suite evals/gate2_freeform_dev_v1.jsonl \
+  --models qwen06-e1,qwen06-e3,qwen17-e3,qwen4-e3 \
+  --judge-model azure-judge \
+  --temperature 0 \
+  --max-tokens 512 \
+  --concurrency 4
+```
+
+`--models` and `--judge-model` accept numeric deployment IDs or exact unique `model_version` values. Candidate generation uses one frozen configuration for every selected model. Useful controls include `--top-p`, `--seed`, `--timeout`, `--retries`, `--retry-backoff`, and `--output-dir`.
+
+The stable run ID hashes the suite digest, candidate and judge deployment snapshots, endpoints, non-secret configuration, generation/judge settings, execution settings, and schema/scoring/runner versions. A new run creates `eval_runs/<run_id>/config.json` exclusively and refuses to overwrite an existing run. Use the same command with `--resume` to continue that exact run; completed model/item and judge records are skipped.
+
+Generation and judging are separate durable phases. All candidate calls finish and each raw result is flushed to `responses.jsonl` before judging begins. A run produces:
+
+- `config.json`: immutable run identity and audited configuration
+- `responses.jsonl`: raw candidate text, errors, request IDs, usage, timing, and provider metadata
+- `judged.jsonl`: deterministic checks, raw and validated judge output, and combined score
+- `summary.json` and `summary.csv`: overall and model/category/subcategory/severity/tag profiles
+- `comparison.csv`: per-model, per-category comparison rows
+- `failures.jsonl`: severity-first, score-sorted failures
+
+The combined score retains the judge's `0..3` rubric score but applies versioned deterministic caps for unusable or explicitly configured hard failures. Reports keep rubric, deterministic, refusal, mode, forbidden-claim, required-point, and repetition dimensions separate. Over/under-refusal metrics are emitted only when the dataset supplies `refusal_expectation`; named Alpha/Delta profiles come from dataset categories or `metric_tags`, not hard-coded domain logic.
+
+Interactive responses can be marked as eval candidates from the comparison cards. Admins can export the review queue from `/admin/eval-candidates`. Candidate records contain prompt/response/model provenance only and are never inserted into a frozen suite automatically.
 
 ## Review and export
 
@@ -151,7 +199,7 @@ alembic upgrade head
 python -m build
 ```
 
-Tests cover session creation and new chats, session pinning, ordered history, exact response/failure/feedback persistence, latency math, providers and remote errors, browser secret exposure, access separation, review/export, and deployment switching.
+Tests cover session creation and new chats, session pinning, isolated RGB histories, partial shadow failures, exact response/failure/feedback persistence, candidate export, latency math, providers and remote errors, Azure OpenAI translation, suite validation, stable run IDs, raw-before-judge ordering, resume, summaries, browser secret exposure, access separation, and deployment switching.
 
 ## Docker
 

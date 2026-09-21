@@ -26,9 +26,10 @@ dev = ["pytest>=8.3,<9", "pytest-cov>=6,<7", "ruff>=0.8,<1"]
 
 [project.scripts]
 chat-eval = "app.cli:main"
+chat-eval-run = "eval_runner.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["app"]
+packages = ["app", "eval_runner"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

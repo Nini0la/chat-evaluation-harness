@@ -32,13 +32,19 @@ class HttpModelProvider(ModelProvider):
             response = self.client.post(endpoint, json=payload, headers=headers)
             response.raise_for_status()
         except httpx.TimeoutException as exc:
-            raise ProviderError("timeout", "Remote model request timed out") from exc
+            raise ProviderError(
+                "timeout", "Remote model request timed out", retryable=True
+            ) from exc
         except httpx.HTTPStatusError as exc:
             raise ProviderError(
-                "provider_failure", f"Remote model returned HTTP {exc.response.status_code}"
+                "provider_failure",
+                f"Remote model returned HTTP {exc.response.status_code}",
+                retryable=exc.response.status_code == 429 or exc.response.status_code >= 500,
             ) from exc
         except httpx.RequestError as exc:
-            raise ProviderError("network_failure", "Remote model network request failed") from exc
+            raise ProviderError(
+                "network_failure", "Remote model network request failed", retryable=True
+            ) from exc
         try:
             body = response.json()
             if not isinstance(body, dict):
@@ -66,7 +72,7 @@ class HttpModelProvider(ModelProvider):
                 value is not None
                 and (
                     isinstance(value, bool)
-                    or not isinstance(value, (int, float))
+                    or not isinstance(value, int | float)
                     or not math.isfinite(value)
                     or value < 0
                 )
@@ -92,3 +98,6 @@ class HttpModelProvider(ModelProvider):
             raise ProviderError(
                 "malformed_response", "Remote model returned malformed data"
             ) from exc
+
+    def close(self) -> None:
+        self.client.close()

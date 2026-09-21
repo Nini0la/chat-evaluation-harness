@@ -15,13 +15,25 @@ from app.auth import require_admin, require_tester
 from app.chat_service import ApplicationTurnError, TurnConflict, run_turn
 from app.config import Settings, get_settings
 from app.database import get_db
+from app.eval_candidates import eval_candidates_jsonl, export_eval_candidates
 from app.export import as_csv, as_jsonl, export_records
-from app.models import Feedback, ModelDeployment, Session, Turn
+from app.models import (
+    EvalCandidate,
+    Feedback,
+    ModelDeployment,
+    Session,
+    SessionShadow,
+    ShadowResponse,
+    Turn,
+)
 from app.providers.base import ProviderError
 from app.providers.factory import build_provider
 from app.schemas import (
     DeploymentCreate,
+    DeploymentOptionRead,
     DeploymentRead,
+    EvalCandidateCreate,
+    EvalCandidateRead,
     FeedbackCreate,
     FeedbackRead,
     MessageCreate,
@@ -93,15 +105,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         if deployment is None:
             raise HTTPException(status_code=503, detail="No active model deployment")
+        shadow_ids = [shadow.model_deployment_id for shadow in payload.shadows]
+        if deployment.id in shadow_ids:
+            raise HTTPException(
+                status_code=422, detail="A shadow deployment cannot equal the primary deployment"
+            )
+        shadow_deployments = {
+            item.id: item
+            for item in db.scalars(
+                select(ModelDeployment).where(ModelDeployment.id.in_(shadow_ids))
+            ).all()
+        }
+        missing_ids = sorted(set(shadow_ids) - shadow_deployments.keys())
+        if missing_ids:
+            raise HTTPException(
+                status_code=422, detail=f"Unknown shadow deployment IDs: {missing_ids}"
+            )
+        slot_order = {"red": 0, "green": 1, "blue": 2}
         session = Session(
             anonymous_tester_id=payload.anonymous_tester_id,
             client_metadata=payload.client_metadata,
             model_deployment_id=deployment.id,
+            shadows=[
+                SessionShadow(slot=shadow.slot, model_deployment_id=shadow.model_deployment_id)
+                for shadow in sorted(payload.shadows, key=lambda item: slot_order[item.slot])
+            ],
         )
         db.add(session)
         db.commit()
         db.refresh(session)
         return session
+
+    @app.get(
+        "/api/deployments",
+        response_model=list[DeploymentOptionRead],
+        dependencies=[Depends(require_tester)],
+    )
+    def list_deployments(db: DbSession = Depends(get_db)) -> list[ModelDeployment]:
+        return list(db.scalars(select(ModelDeployment).order_by(ModelDeployment.id)).all())
 
     @app.get(
         "/api/sessions/{session_id}",
@@ -125,6 +166,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return list(
             db.scalars(
                 select(Turn)
+                .options(
+                    selectinload(Turn.shadow_responses).selectinload(ShadowResponse.session_shadow)
+                )
                 .where(Turn.session_id == session_id)
                 .order_by(Turn.turn_number, Turn.created_at)
             ).all()
@@ -144,7 +188,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
         try:
-            return run_turn(db, session, payload.message, app.state.provider_factory)
+            stale_after_seconds = max(
+                300.0,
+                app_settings.model_timeout_seconds * 2 * (len(session.shadows) + 1),
+            )
+            return run_turn(
+                db,
+                session,
+                payload.message,
+                app.state.provider_factory,
+                stale_after_seconds=stale_after_seconds,
+            )
         except TurnConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ProviderError as exc:
@@ -170,6 +224,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.commit()
         db.refresh(feedback)
         return feedback
+
+    @app.post(
+        "/api/turns/{turn_id}/eval-candidates",
+        response_model=EvalCandidateRead,
+        status_code=201,
+        dependencies=[Depends(require_tester)],
+    )
+    def create_eval_candidate(
+        turn_id: uuid.UUID,
+        payload: EvalCandidateCreate,
+        db: DbSession = Depends(get_db),
+    ) -> EvalCandidate:
+        turn = db.scalar(
+            select(Turn)
+            .options(
+                selectinload(Turn.shadow_responses).selectinload(ShadowResponse.session_shadow)
+            )
+            .where(Turn.id == turn_id)
+        )
+        if turn is None:
+            raise HTTPException(status_code=404, detail="Turn not found")
+        if payload.source == "primary":
+            available = turn.assistant_response is not None
+        else:
+            available = any(
+                item.slot == payload.source and item.assistant_response is not None
+                for item in turn.shadow_responses
+            )
+        if not available:
+            raise HTTPException(status_code=422, detail="Selected response is not available")
+        existing = db.scalar(
+            select(EvalCandidate).where(
+                EvalCandidate.turn_id == turn_id,
+                EvalCandidate.source == payload.source,
+            )
+        )
+        if existing is not None:
+            return existing
+        candidate = EvalCandidate(turn_id=turn_id, **payload.model_dump())
+        db.add(candidate)
+        db.commit()
+        db.refresh(candidate)
+        return candidate
 
     @app.get("/admin", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
     def admin_review(request: Request, db: DbSession = Depends(get_db)):
@@ -206,6 +303,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             as_csv(records),
             media_type="text/csv",
             headers={"Content-Disposition": "attachment; filename=interactions.csv"},
+        )
+
+    @app.get("/admin/eval-candidates", dependencies=[Depends(require_admin)])
+    def export_candidates(db: DbSession = Depends(get_db)) -> PlainTextResponse:
+        records = export_eval_candidates(db)
+        return PlainTextResponse(
+            eval_candidates_jsonl(records),
+            media_type="application/x-ndjson",
+            headers={"Content-Disposition": "attachment; filename=eval-candidates.jsonl"},
         )
 
     @app.post(
